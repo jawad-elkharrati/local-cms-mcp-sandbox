@@ -1,0 +1,1 @@
+"""Fake Blog domain services."""
