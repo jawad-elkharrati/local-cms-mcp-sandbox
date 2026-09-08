@@ -1,45 +1,73 @@
-# CMS MCP Sandbox
+# Local CMS MCP Lab
 
-A local development project that connects an MCP client to a small fictional CMS. It is designed for
-learning and experimentation: everything runs on your machine, the content is fake, and no external AI
-or production CMS is required.
+I built this project to understand what happens when an MCP client works with a content management
+system. The result is a small fictional blog that runs locally and can be queried or updated from Codex
+through an MCP server.
 
-The project includes:
+The main design choice is that MCP never writes to the database directly. Every operation goes through
+the FastAPI application, so the same validation, permissions, version checks and audit rules apply
+whether the request comes from HTTP or from an MCP client.
 
-- an MCP server with tools, resources, and workflow prompts;
-- a FastAPI application that owns the CMS business rules;
-- PostgreSQL for articles, revisions, permissions, and audit history;
-- MinIO for uploaded media;
-- deterministic content analysis using TF-IDF, cosine similarity, and shingles.
+## What is included
 
-> This repository is a sandbox. Do not point it at a real CMS, production database, or company
-> infrastructure. The development tokens and seeded content are intentionally fake.
+- a FastAPI CMS with articles, revisions, media, taxonomy and audit history;
+- an MCP server exposing tools, resources and reusable prompts;
+- PostgreSQL for relational data and MinIO for uploaded files;
+- local readability, SEO and duplicate-content checks;
+- test identities with reader, editor, publisher and administrator roles;
+- Docker Compose for a repeatable local setup.
 
-## How it fits together
+## Architecture
 
 ```mermaid
 flowchart LR
-  Client["MCP client"] -->|"stdio or local HTTP"| MCP["MCP server"]
-  MCP -->|"HTTP + Bearer token"| API["FastAPI CMS"]
-  Browser["Web browser"] --> API
-  API --> PG["PostgreSQL"]
-  API --> MinIO["MinIO"]
+    User["User"] --> Codex["Codex / MCP client"]
+    Codex -->|"stdio"| MCP["Local MCP server"]
+    MCP -->|"HTTP + JSON"| API["FastAPI CMS"]
+    API --> PG["PostgreSQL"]
+    API --> MinIO["MinIO"]
+    Browser["Local blog"] --> API
 ```
 
-The MCP layer never writes directly to the database. It calls the FastAPI application, which validates
-permissions and content rules before changing anything.
+FastAPI remains the source of truth for the business rules. The MCP server is an adapter: it describes
+the available actions, validates their arguments and translates tool calls into HTTP requests.
 
-## Requirements
+## A quick look
 
-- Python 3.12 or newer
-- [uv](https://docs.astral.sh/uv/)
-- Docker Desktop
+### Check the current identity and services
 
-Node.js is optional and only needed for the MCP Inspector.
+The first call uses `whoami` to show the configured CMS identity, then `health_check` to verify the local
+services. Both operations are read-only.
 
-## Start the project
+![Codex calling whoami and health_check](.github/readme/mcp-health-check.png)
 
-Open PowerShell in the repository folder, then run:
+### Read articles without opening the CMS interface
+
+Here Codex calls `list_articles` and returns the first five items with their status and slug. The response
+also includes the next pagination cursor.
+
+![Codex listing the first five CMS articles](.github/readme/mcp-list-articles.png)
+
+### Create a draft safely
+
+This example creates a draft with a fixed idempotency key. Reusing that key for the same request returns
+the original result instead of creating a duplicate. The article stays in `draft`; publication requires a
+different permission.
+
+![Codex creating a draft with an idempotency key](.github/readme/mcp-create-draft.png)
+
+### Discover the available tools
+
+An MCP client discovers the tools from the server instead of relying on a hard-coded menu. These are five
+simple examples from the larger catalog.
+
+![Five tools exposed by the local MCP server](.github/readme/mcp-tools.png)
+
+## Run it locally
+
+You need Python 3.12, [uv](https://docs.astral.sh/uv/) and Docker Desktop.
+
+From PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
@@ -50,23 +78,25 @@ docker compose run --rm fake-blog uv run python scripts/seed.py
 uv run python scripts/smoke_test.py
 ```
 
-Once the checks pass, these local pages are available:
+After startup:
 
 - blog: <http://127.0.0.1:8000/>
 - diagnostics: <http://127.0.0.1:8000/admin>
+- API documentation: <http://127.0.0.1:8000/docs>
 - MinIO console: <http://127.0.0.1:9001>
 
-PostgreSQL and MinIO listen only on `127.0.0.1`.
+## Connect Codex over stdio
 
-## Connect an MCP client
+Create a local MCP server in Codex with these settings:
 
-For a local stdio connection, use this executable as the server command:
+| Setting | Value |
+|---|---|
+| Name | `local-cms-mcp-lab` |
+| Type | `STDIO` |
+| Command | absolute path to `.venv\Scripts\cms-mcp.exe` |
+| Working directory | absolute path to this repository |
 
-```text
-.venv\Scripts\cms-mcp.exe
-```
-
-Set the working directory to the repository root and provide these environment variables:
+Add the following environment variables:
 
 ```text
 MCP_TRANSPORT=stdio
@@ -74,34 +104,32 @@ BLOG_API_BASE_URL=http://127.0.0.1:8000/api/v1
 BLOG_API_TOKEN=dev-editor-token
 ```
 
-The executable is generated by `uv sync` from the `cms-mcp` entry in `pyproject.toml`. To inspect the
-server without another client, run:
+The `cms-mcp.exe` launcher is created locally by `uv sync` from the entry point declared in
+`pyproject.toml`.
 
-```powershell
-uv run mcp dev apps/mcp_server/server.py
+Some useful prompts to try:
+
+```text
+Use local-cms-mcp-lab. Call whoami and health_check. Do not modify any data.
+
+Use local-cms-mcp-lab and list the first five articles.
+
+Create a draft named "Test MCP with Codex". Use the idempotency key codex-test-stdio-001.
+Do not publish it.
 ```
 
-An optional Streamable HTTP server is also available:
+## Roles used in the demo
 
-```powershell
-docker compose --profile mcp-http up -d --build
-```
-
-It listens locally at `http://127.0.0.1:8100/mcp`.
-
-## Demo identities
-
-The seed script creates several local identities:
-
-| Token | Role | Access |
+| Token | Role | Main access |
 |---|---|---|
-| `dev-reader-token` | reader | Read content |
-| `dev-editor-token` | editor | Create and edit drafts, upload media |
-| `dev-publisher-token` | publisher | Editor access plus publish and unpublish |
-| `dev-admin-token` | admin | Full local access |
-| `expired-demo-token` | expired | Test a predictable authentication failure |
+| `dev-reader-token` | reader | read content |
+| `dev-editor-token` | editor | create and edit drafts, upload media |
+| `dev-publisher-token` | publisher | editor access plus publication |
+| `dev-admin-token` | admin | full access to the local lab |
+| `expired-demo-token` | expired | predictable authentication failure |
 
-These values are public test credentials and must never be reused outside this sandbox.
+These are local test credentials. They are deliberately included for the sandbox and should not be reused
+for another project.
 
 ## Run the checks
 
@@ -112,10 +140,18 @@ uv run mypy apps packages
 uv run pytest -q
 ```
 
-To rebuild the sample data:
+The test suite covers the article lifecycle, permissions, optimistic concurrency, idempotency, media
+validation, MCP discovery and local content analysis.
 
-```powershell
-uv run python scripts/reset_local.py
-uv run alembic upgrade head
-uv run python scripts/seed.py
+## Main directories
+
+```text
+apps/fake_blog/    FastAPI application and CMS rules
+apps/mcp_server/   MCP server, tools and resources
+migrations/        database schema history
+scripts/           setup, seed and smoke-test commands
+tests/             API, MCP, security and unit tests
 ```
+
+This repository is intended for local learning and demonstrations. It is not configured for a public or
+production deployment.
